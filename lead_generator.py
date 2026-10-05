@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Callable, Any
+from typing import Any, Callable, Iterable
 
 import config
 import places
@@ -15,6 +15,9 @@ logger = config.get_logger(__name__)
 
 PINCODE_PATTERN = re.compile(r"^\d{4,10}$")
 ProgressCallback = Callable[[dict[str, Any]], None]
+
+# Record fields a caller may insist on (phone is always required).
+OPTIONAL_CONTACT_FIELDS = ("email", "website", "instagram", "facebook")
 
 
 def validate_pincode(pincode: str) -> bool:
@@ -33,8 +36,13 @@ def collect_leads(
     min_records: int = config.MIN_RECORDS,
     progress_callback: ProgressCallback | None = None,
     export_excel: bool = True,
+    required_fields: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Collect local-business leads and optionally export them to Excel.
+
+    Every lead has a phone number. ``required_fields`` (any of
+    OPTIONAL_CONTACT_FIELDS) skips businesses missing those contacts, so the
+    search keeps going until ``min_records`` fully matching leads are found.
 
     Returns a dictionary containing records, counts, duration, a message and
     the generated Excel path (when ``export_excel`` is True and records exist).
@@ -49,6 +57,10 @@ def collect_leads(
         raise ValueError("Business domain/category is required.")
     if not 1 <= int(min_records) <= 200:
         raise ValueError("Minimum records must be between 1 and 200.")
+    required = list(dict.fromkeys(required_fields))
+    unknown = set(required) - set(OPTIONAL_CONTACT_FIELDS)
+    if unknown:
+        raise ValueError(f"Unknown required field(s): {', '.join(sorted(unknown))}")
 
     min_records = int(min_records)
     query = f"{domain} in {pincode}"
@@ -57,6 +69,7 @@ def collect_leads(
     records: list[dict[str, str]] = []
     seen_ids: set[str] = set()
     skipped_no_phone = 0
+    skipped_missing = 0
     page_token: str | None = None
     total_candidates = 0
     current_page = 0
@@ -68,6 +81,7 @@ def collect_leads(
         records=records.copy(),
         total_candidates=0,
         skipped_no_phone=0,
+        skipped_missing=0,
         current_page=0,
     )
 
@@ -83,6 +97,7 @@ def collect_leads(
             records=records.copy(),
             total_candidates=total_candidates,
             skipped_no_phone=skipped_no_phone,
+            skipped_missing=skipped_missing,
             current_page=current_page,
         )
 
@@ -106,11 +121,17 @@ def collect_leads(
                     records=records.copy(),
                     total_candidates=total_candidates,
                     skipped_no_phone=skipped_no_phone,
+                    skipped_missing=skipped_missing,
                     current_page=current_page,
                 )
                 continue
 
             website = details.get("websiteUri")
+            # Email and social links come from the website, so without one
+            # no other required contact can be satisfied.
+            if required and not website:
+                skipped_missing += 1
+                continue
             contact = website_finder.gather_contact_info(website) if website else {}
 
             record = {
@@ -125,6 +146,19 @@ def collect_leads(
                 "source": "google_places",
                 "captured_at": datetime.now(timezone.utc).isoformat(),
             }
+            if any(not record[field] for field in required):
+                skipped_missing += 1
+                _notify(
+                    progress_callback,
+                    stage="processing",
+                    message="Skipping a business missing the required contacts...",
+                    records=records.copy(),
+                    total_candidates=total_candidates,
+                    skipped_no_phone=skipped_no_phone,
+                    skipped_missing=skipped_missing,
+                    current_page=current_page,
+                )
+                continue
             records.append(record)
 
             _notify(
@@ -134,6 +168,7 @@ def collect_leads(
                 records=records.copy(),
                 total_candidates=total_candidates,
                 skipped_no_phone=skipped_no_phone,
+                skipped_missing=skipped_missing,
                 current_page=current_page,
             )
 
@@ -158,12 +193,13 @@ def collect_leads(
 
     duration = round((datetime.now(timezone.utc) - started_at).total_seconds(), 1)
 
+    wanted = "phone numbers" + "".join(f", {f}" for f in required)
     if not records:
-        message = "No businesses with phone numbers were found for this search."
+        message = f"No businesses with {wanted} were found for this search."
     elif len(records) < min_records:
         message = (
             f"Found {len(records)} lead(s). Fewer than the requested {min_records} "
-            "records were available with phone numbers."
+            f"records were available with {wanted}."
         )
     else:
         message = f"Collected {len(records)} lead(s) successfully."
@@ -172,6 +208,8 @@ def collect_leads(
         "records": records,
         "total_candidates": total_candidates,
         "skipped_no_phone": skipped_no_phone,
+        "skipped_missing": skipped_missing,
+        "required_fields": required,
         "current_page": current_page,
         "duration": duration,
         "message": message,

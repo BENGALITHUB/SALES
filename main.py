@@ -11,7 +11,7 @@ import sys
 
 import config
 import places
-from lead_generator import collect_leads
+from lead_generator import OPTIONAL_CONTACT_FIELDS, collect_leads
 
 
 def main() -> None:
@@ -27,6 +27,13 @@ def main() -> None:
         type=int,
         default=config.MIN_RECORDS,
         help="Minimum number of records to attempt",
+    )
+    parser.add_argument(
+        "--require",
+        nargs="+",
+        default=[],
+        choices=OPTIONAL_CONTACT_FIELDS,
+        help="Only keep leads that also have these contacts, e.g. --require email website",
     )
     args = parser.parse_args()
 
@@ -47,6 +54,7 @@ def main() -> None:
             args.min_records,
             progress_callback=print_progress,
             export_excel=True,
+            required_fields=args.require,
         )
     except (ValueError, places.PlacesAPIError) as exc:
         print(f"\nError: {exc}", file=sys.stderr)
