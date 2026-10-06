@@ -129,7 +129,7 @@ def hero() -> None:
         '<div class="ls-hero">'
         '<span class="ls-eyebrow">Local business lead generation</span>'
         '<div class="ls-title">LeadScout</div>'
-        '<div class="ls-tag">Find businesses by category and pincode, enrich them with phone, email, '
+        '<div class="ls-tag">Find businesses by category and city or pincode, enrich them with phone, email, '
         "website and social profiles, then export a polished Excel report in one click.</div>"
         f'<div class="ls-chips">{chips}</div>'
         "</div>"
@@ -141,7 +141,7 @@ def kpi_cards(df: pd.DataFrame) -> str:
     cards = [
         '<div class="ls-kpi"><div class="top">Total leads'
         '<span class="ico" style="background:#4F46E51A">📇</span></div>'
-        f'<div class="val">{total}</div><div class="sub">all with phone numbers</div>'
+        f'<div class="val">{total}</div><div class="sub">all search results</div>'
         '<div class="ls-bar"><span style="width:100%;background:linear-gradient(90deg,#4F46E5,#7C3AED)"></span></div></div>'
     ]
     for key in ("email", "website", "instagram", "facebook"):
@@ -159,8 +159,8 @@ def kpi_cards(df: pd.DataFrame) -> str:
 
 def empty_state() -> None:
     steps = (
-        ("Search", "Enter a pincode, a business category and how many leads you need."),
-        ("Filter", "Keep only leads with phone numbers, emails, websites, Instagram or Facebook."),
+        ("Search", "Enter a city or pincode, a business category and how many leads you need."),
+        ("Filter", "Optionally keep only leads with phone numbers, emails, websites, Instagram or Facebook."),
         ("Export", "Download a branded Excel report with a summary sheet, or CSV / JSON."),
     )
     cards = "".join(
@@ -175,6 +175,7 @@ def search_form() -> None:
     with st.form("lead_search_form", border=False):
         c1, c2, c3 = st.columns([1.1, 2, 1.1])
         pincode = c1.text_input("Pincode", placeholder="e.g. 700075", max_chars=10)
+        city = c1.text_input("City", placeholder="e.g. Kolkata")
         domain = c2.text_input("Business category", placeholder="e.g. restaurant, gym, salon, dentist")
         target = c3.number_input(
             "Number of records",
@@ -186,10 +187,10 @@ def search_form() -> None:
         )
         required = st.pills(
             "Only collect leads that also have",
-            options=[k for k in CONTACTS if k != "phone"],
+            options=list(CONTACTS),
             selection_mode="multi",
             format_func=lambda k: f"{CONTACTS[k][1]} {CONTACTS[k][0]}",
-            help="Every lead always includes a phone number. Stricter requirements search longer.",
+            help="Select any contact to require it. By default, businesses with or without phone numbers are included.",
         )
         submitted = st.form_submit_button(
             "Generate leads", type="primary", icon=":material/travel_explore:", width="stretch"
@@ -197,18 +198,22 @@ def search_form() -> None:
 
     if not submitted:
         return
-    pincode, domain = pincode.strip(), domain.strip()
-    if not validate_pincode(pincode):
+    pincode, city, domain = pincode.strip(), city.strip(), domain.strip()
+    if pincode and not validate_pincode(pincode):
         st.error("Invalid pincode — enter 4 to 10 digits.", icon=":material/error:")
+        return
+    if not pincode and not city:
+        st.error("Please enter a city, a pincode, or both.", icon=":material/error:")
         return
     if not domain:
         st.error("Please enter a business category.", icon=":material/error:")
         return
-    run_search(pincode, domain, int(target), list(required or []))
+    run_search(pincode, city, domain, int(target), list(required or []))
 
 
-def run_search(pincode: str, domain: str, target: int, required: list[str]) -> None:
-    status = st.status(f"Searching for **{domain}** near **{pincode}**…", expanded=True)
+def run_search(pincode: str, city: str, domain: str, target: int, required: list[str]) -> None:
+    location = ", ".join(part for part in (city, pincode) if part)
+    status = st.status(f"Searching for **{domain}** near **{location}**…", expanded=True)
     with status:
         bar = st.progress(0.0, text="Starting…")
         stats_slot = st.empty()
@@ -237,6 +242,7 @@ def run_search(pincode: str, domain: str, target: int, required: list[str]) -> N
         result = collect_leads(
             pincode=pincode,
             domain=domain,
+            city=city,
             min_records=target,
             progress_callback=on_progress,
             export_excel=False,
@@ -255,7 +261,13 @@ def run_search(pincode: str, domain: str, target: int, required: list[str]) -> N
     for key in RESULT_WIDGET_KEYS:
         st.session_state.pop(key, None)
     st.session_state.result = result
-    st.session_state.search = {"pincode": pincode, "domain": domain, "target": target, "required": required}
+    st.session_state.search = {
+        "pincode": pincode,
+        "city": city,
+        "domain": domain,
+        "target": target,
+        "required": required,
+    }
     st.session_state.flash = result["message"]
     st.rerun()
 
@@ -322,7 +334,8 @@ def results_table(view: pd.DataFrame, total: int) -> None:
 
 
 def downloads(view: pd.DataFrame, search: dict, filter_labels: list[str]) -> None:
-    domain, pincode = search["domain"], search["pincode"]
+    domain, pincode, city = search["domain"], search["pincode"], search["city"]
+    location = ", ".join(part for part in (city, pincode) if part)
     _html(
         '<div class="ls-head"><div><div class="t">Download report</div>'
         '<div class="s">Downloads include exactly the leads and columns shown above.</div></div></div>'
@@ -330,12 +343,13 @@ def downloads(view: pd.DataFrame, search: dict, filter_labels: list[str]) -> Non
 
     with st.expander("Customize Excel report", icon=":material/tune:"):
         a, b = st.columns(2)
-        title = a.text_input("Report title", value=f"{domain.title()} Leads — {pincode}", key="rpt_title")
+        title = a.text_input("Report title", value=f"{domain.title()} Leads — {location}", key="rpt_title")
         prepared_by = b.text_input("Prepared by / company", placeholder="Optional", key="rpt_by")
         c, d = st.columns(2)
         theme = c.segmented_control("Colour theme", list(THEMES), default="Indigo", key="rpt_theme") or "Indigo"
         safe_domain = re.sub(r"\W+", "_", domain.lower()).strip("_")
-        file_stem = d.text_input("File name", value=f"leads_{pincode}_{safe_domain}", key="rpt_file")
+        safe_location = re.sub(r"\W+", "_", location.lower()).strip("_")
+        file_stem = d.text_input("File name", value=f"leads_{safe_location}_{safe_domain}", key="rpt_file")
         e, f = st.columns(2)
         include_summary = e.toggle("Add summary sheet (coverage stats)", value=True)
         serial_numbers = f.toggle("Add serial number column (#)", value=True)
@@ -345,7 +359,8 @@ def downloads(view: pd.DataFrame, search: dict, filter_labels: list[str]) -> Non
         part
         for part in (
             domain.title(),
-            f"Pincode {pincode}",
+            f"City {city}" if city else "",
+            f"Pincode {pincode}" if pincode else "",
             f"{len(view)} leads",
             f"Generated {now:%d %b %Y, %I:%M %p}",
             f"Prepared by {prepared_by.strip()}" if prepared_by.strip() else "",
@@ -354,9 +369,10 @@ def downloads(view: pd.DataFrame, search: dict, filter_labels: list[str]) -> Non
     )
     metadata = {
         "Business category": domain,
+        "City": city,
         "Pincode": pincode,
         "Records requested": search["target"],
-        "Required contacts": ", ".join(["Phone"] + [CONTACTS[k][0] for k in search["required"]]),
+        "Required contacts": ", ".join(CONTACTS[k][0] for k in search["required"]) or "None",
         "View filters": ", ".join(filter_labels) or "None",
         "Generated on": f"{now:%d %b %Y, %I:%M %p}",
         "Prepared by": prepared_by.strip(),
@@ -414,7 +430,8 @@ def results() -> None:
     with head:
         _html(
             '<div class="ls-head"><div>'
-            f'<div class="t">{len(df)} leads · {html.escape(search["domain"].title())} in {html.escape(search["pincode"])}</div>'
+            f'<div class="t">{len(df)} leads · {html.escape(search["domain"].title())} in '
+            f'{html.escape(", ".join(part for part in (search["city"], search["pincode"]) if part))}</div>'
             f'<div class="s">{html.escape(result["message"])} · {result["total_candidates"]} candidates scanned '
             f'in {result["duration"]}s</div></div></div>'
         )
@@ -425,7 +442,7 @@ def results() -> None:
 
     if df.empty:
         st.warning(
-            "No leads found. Try a broader category, a neighbouring pincode or fewer required contacts.",
+            "No leads found. Try a broader category, another city or pincode, or fewer required contacts.",
             icon=":material/search_off:",
         )
         return

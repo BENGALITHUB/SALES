@@ -9,7 +9,9 @@ import config
 logger = config.get_logger(__name__)
 
 TEXT_SEARCH_FIELD_MASK = "places.id,places.displayName,places.formattedAddress,nextPageToken"
-DETAILS_FIELD_MASK = "id,displayName,formattedAddress,internationalPhoneNumber,websiteUri"
+DETAILS_FIELD_MASK = (
+    "id,displayName,formattedAddress,addressComponents,internationalPhoneNumber,websiteUri"
+)
 
 
 class PlacesAPIError(Exception):

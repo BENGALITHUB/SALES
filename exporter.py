@@ -20,6 +20,8 @@ logger = config.get_logger(__name__)
 FIELDS = {
     "Business Name": "name",
     "Address": "address",
+    "City": "city",
+    "Pincode": "pincode",
     "Phone Number": "phone",
     "Email ID": "email",
     "Website": "website",
@@ -44,6 +46,8 @@ MAX_WIDTHS = {
     "#": 6,
     "Business Name": 34,
     "Address": 50,
+    "City": 24,
+    "Pincode": 12,
     "Phone Number": 20,
     "Email ID": 34,
     "Website": 38,

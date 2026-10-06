@@ -16,8 +16,8 @@ logger = config.get_logger(__name__)
 PINCODE_PATTERN = re.compile(r"^\d{4,10}$")
 ProgressCallback = Callable[[dict[str, Any]], None]
 
-# Record fields a caller may insist on (phone is always required).
-OPTIONAL_CONTACT_FIELDS = ("email", "website", "instagram", "facebook")
+# Contact fields a caller may insist on; no contact is required by default.
+OPTIONAL_CONTACT_FIELDS = ("phone", "email", "website", "instagram", "facebook")
 
 
 def validate_pincode(pincode: str) -> bool:
@@ -30,29 +30,40 @@ def _notify(callback: ProgressCallback | None, **payload: Any) -> None:
         callback(payload)
 
 
+def _address_value(details: dict[str, Any], component_type: str) -> str:
+    for component in details.get("addressComponents", []):
+        if component_type in component.get("types", []):
+            return component.get("longText", "")
+    return ""
+
+
 def collect_leads(
-    pincode: str,
-    domain: str,
+    pincode: str = "",
+    domain: str = "",
     min_records: int = config.MIN_RECORDS,
     progress_callback: ProgressCallback | None = None,
     export_excel: bool = True,
     required_fields: Iterable[str] = (),
+    city: str = "",
 ) -> dict[str, Any]:
     """Collect local-business leads and optionally export them to Excel.
 
-    Every lead has a phone number. ``required_fields`` (any of
-    OPTIONAL_CONTACT_FIELDS) skips businesses missing those contacts, so the
-    search keeps going until ``min_records`` fully matching leads are found.
+    City and pincode may be provided independently or together. ``required_fields``
+    skips businesses missing the selected contacts, so the search keeps going
+    until ``min_records`` fully matching leads are found.
 
     Returns a dictionary containing records, counts, duration, a message and
     the generated Excel path (when ``export_excel`` is True and records exist).
     """
     started_at = datetime.now(timezone.utc)
     pincode = pincode.strip()
+    city = city.strip()
     domain = domain.strip()
 
-    if not validate_pincode(pincode):
+    if pincode and not validate_pincode(pincode):
         raise ValueError("Invalid pincode. Enter digits only (4 to 10 digits).")
+    if not pincode and not city:
+        raise ValueError("Enter a city, a pincode, or both.")
     if not domain:
         raise ValueError("Business domain/category is required.")
     if not 1 <= int(min_records) <= 200:
@@ -63,8 +74,9 @@ def collect_leads(
         raise ValueError(f"Unknown required field(s): {', '.join(sorted(unknown))}")
 
     min_records = int(min_records)
-    query = f"{domain} in {pincode}"
-    logger.info("Starting lead search: pincode=%s domain=%s", pincode, domain)
+    location = " ".join(part for part in (city, pincode) if part)
+    query = f"{domain} in {location}"
+    logger.info("Starting lead search: city=%s pincode=%s domain=%s", city, pincode, domain)
 
     records: list[dict[str, str]] = []
     seen_ids: set[str] = set()
@@ -117,27 +129,41 @@ def collect_leads(
                 _notify(
                     progress_callback,
                     stage="processing",
-                    message="Skipping a business without a phone number...",
+                    message="Found a business without a phone number...",
                     records=records.copy(),
                     total_candidates=total_candidates,
                     skipped_no_phone=skipped_no_phone,
                     skipped_missing=skipped_missing,
                     current_page=current_page,
                 )
-                continue
 
             website = details.get("websiteUri")
             # Email and social links come from the website, so without one
             # no other required contact can be satisfied.
-            if required and not website:
+            if any(field != "phone" for field in required) and not website:
                 skipped_missing += 1
                 continue
             contact = website_finder.gather_contact_info(website) if website else {}
+            city_from_address = next(
+                (
+                    value
+                    for component_type in (
+                        "locality",
+                        "postal_town",
+                        "administrative_area_level_3",
+                        "administrative_area_level_2",
+                    )
+                    if (value := _address_value(details, component_type))
+                ),
+                "",
+            )
 
             record = {
                 "place_id": place_id,
                 "name": details.get("displayName", {}).get("text", ""),
                 "address": details.get("formattedAddress", ""),
+                "city": city_from_address or city,
+                "pincode": _address_value(details, "postal_code") or pincode,
                 "phone": phone,
                 "website": website or "",
                 "email": contact.get("email") or "",
@@ -176,7 +202,7 @@ def collect_leads(
                 break
 
         logger.info(
-            "Page %d: %d lead(s) with phone collected (%d candidates seen)",
+            "Page %d: %d lead(s) collected (%d candidates seen)",
             current_page,
             len(records),
             total_candidates,
@@ -188,19 +214,22 @@ def collect_leads(
     output_path = ""
     if records and export_excel:
         safe_domain = re.sub(r"\W+", "_", domain.lower()).strip("_") or "business"
-        filename = f"leads_{pincode}_{safe_domain}.xlsx"
+        safe_location = re.sub(r"\W+", "_", location.lower()).strip("_") or "location"
+        filename = f"leads_{safe_location}_{safe_domain}.xlsx"
         output_path = export_to_excel(records, filename)
 
     duration = round((datetime.now(timezone.utc) - started_at).total_seconds(), 1)
 
-    wanted = "phone numbers" + "".join(f", {f}" for f in required)
+    wanted = ", ".join("phone numbers" if field == "phone" else field for field in required)
     if not records:
-        message = f"No businesses with {wanted} were found for this search."
-    elif len(records) < min_records:
         message = (
-            f"Found {len(records)} lead(s). Fewer than the requested {min_records} "
-            f"records were available with {wanted}."
+            f"No businesses with {wanted} were found for this search."
+            if wanted
+            else "No businesses were found for this search."
         )
+    elif len(records) < min_records:
+        suffix = f" with {wanted}" if wanted else ""
+        message = f"Found {len(records)} lead(s). Fewer than the requested {min_records} records were available{suffix}."
     else:
         message = f"Collected {len(records)} lead(s) successfully."
 

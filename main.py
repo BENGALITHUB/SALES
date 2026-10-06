@@ -2,6 +2,7 @@
 
 Example:
     python main.py --pincode 700075 --domain restaurant --min-records 20
+    python main.py --city Kolkata --domain restaurant --min-records 20
 """
 
 from __future__ import annotations
@@ -16,7 +17,8 @@ from lead_generator import OPTIONAL_CONTACT_FIELDS, collect_leads
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Local business lead generation agent")
-    parser.add_argument("--pincode", required=True, help="Postal/pin code to search")
+    parser.add_argument("--pincode", default="", help="Optional postal/pin code to search")
+    parser.add_argument("--city", default="", help="Optional city to search")
     parser.add_argument(
         "--domain",
         required=True,
@@ -49,12 +51,13 @@ def main() -> None:
 
     try:
         result = collect_leads(
-            args.pincode,
-            args.domain,
-            args.min_records,
+            pincode=args.pincode,
+            domain=args.domain,
+            min_records=args.min_records,
             progress_callback=print_progress,
             export_excel=True,
             required_fields=args.require,
+            city=args.city,
         )
     except (ValueError, places.PlacesAPIError) as exc:
         print(f"\nError: {exc}", file=sys.stderr)
